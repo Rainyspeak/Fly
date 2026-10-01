@@ -25,6 +25,8 @@ PathManager::PathManager() : nh_(), pnh_("~") {
   pnh_.param<std::string>("frame", frame_, "world");
   pnh_.param<double>("timer_dt", timer_dt_, 0.05);            // 20 Hz
   pnh_.param<double>("lookahead_distance", lookahead_, 5.0);  // 建议 ≥ fsm/planning_horizon
+  pnh_.param<double>("center_traverse_clearance", center_traverse_clearance_, 0.15);
+  pnh_.param<double>("center_traverse_lateral", center_traverse_lateral_, 1.5);
   pnh_.param<double>("goal_reached_distance", reached_dist_, 0.20);
   pnh_.param<double>("goal_dwell_time", dwell_, 0.5);
   pnh_.param<double>("min_enqueue_spacing", min_enqueue_spacing_, 0.5);
@@ -106,9 +108,9 @@ void PathManager::recallCallback(const geometry_msgs::PoseStamped::ConstPtr& msg
   complete_ = false;
   inside_since_ = ros::Time();
   for (CenterEntry& ce : centers_) {
-    ce.passed = true;  // 回程不再做框心硬化（历史框心全部放行）
+    ce.passed = true;  // 回程不再做框心硬化（历史框心全部放行，不影响 crossed 计数）
   }
-  publishFrameCount();  // 回溯态计数=登记总数（进度语义到此为止）
+  publishFrameCount();  // 重发当前真实穿越计数（latch 刷新）
   has_path_ = true;
   const Eigen::Vector3d h = toVec3(home.pose.position);
   ROS_INFO("[path_manager] RECALL 回溯任务：队列反转 %zu 点 + home(%.2f, %.2f, %.2f)，"
@@ -332,13 +334,26 @@ void PathManager::centerCallback(const geometry_msgs::PoseStamped::ConstPtr& msg
     return;  // 回程不登记新框心（不硬化回程路径）
   }
   const Eigen::Vector3d p = toVec3(msg->pose.position);
+  // 法向取消息姿态 +X（检测器 quatFromXAxis 约定：+X = 框法向/飞行方向）；
+  // 旧版本消息姿态为单位四元数（+X=世界X），此时保留已存法向/默认值
+  const auto& q = msg->pose.orientation;
+  Eigen::Vector3d n = Eigen::Vector3d::UnitZ();
+  if (std::abs(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z - 1.0) < 0.1) {
+    n = Eigen::Quaterniond(q.w, q.x, q.y, q.z).normalized().toRotationMatrix().col(0);
+  }
+  const bool n_valid = n.allFinite() && n.norm() > 0.9 &&
+                       !(std::abs(q.w - 1.0) < 1e-9);  // identity=无姿态信息
   for (CenterEntry& ce : centers_) {
     if ((ce.point - p).norm() < center_match_dist_) {
       ce.point = p;  // 同框观测更新（EMA 精化跟随）
+      if (n_valid) ce.normal = n;
       return;
     }
   }
-  centers_.push_back(CenterEntry{p, false});
+  CenterEntry ce;
+  ce.point = p;
+  if (n_valid) ce.normal = n;
+  centers_.push_back(ce);
   if (centers_.size() > 64) {
     centers_.erase(centers_.begin());  // FIFO 上限：最老的先出
   }
@@ -399,15 +414,65 @@ void PathManager::rebuildLengths() {
   }
 }
 
-// 框心穿越计数输出：centers_ 中已越过（passed）的框心数。穿越判定 = 路径
-// 进度越过已登记框心 0.5 m，与检测器锁定状态解耦——锁丢失/幻影重锁时
-// window_detector 的穿越事件（status done=N）会漏计（实测 6-7/9），此计数
-// 以存储框心为准补齐；回溯进入时全部置 passed（计数=登记总数）。latch。
+// 框心穿越计数输出：centers_ 中被真正穿越（crossed）的框心数。计数规则 =
+// 穿越过的框心：带符号法向距离扫过 ±clearance 且横向偏差在框内（见
+// updateCenterCrossing），与路径进度、检测器锁定状态、任务完成与否全部
+// 解耦——锁丢失/幻影重锁时 window_detector 的穿越事件（status done=N）会
+// 漏计（实测 6-7/9），此计数以存储框心+几何判定补齐；漏过/绕过的框不计。latch。
 void PathManager::publishFrameCount() {
   std_msgs::Int32 msg;
   msg.data = static_cast<int>(std::count_if(
-      centers_.begin(), centers_.end(), [](const CenterEntry& ce) { return ce.passed; }));
+      centers_.begin(), centers_.end(), [](const CenterEntry& ce) { return ce.crossed; }));
   frame_count_pub_.publish(msg);
+}
+
+// 真正的穿越判定（frame_count 计数规则）：对每个未计框心，取里程计相对框心
+// 的带符号法向距离 s = dot(pos−c, n)。曾到达一侧（|s|≥clearance）后又到达
+// 另一侧 = 扫过框平面（顺穿/反穿对称，回程再穿越也如实计），且到达对侧时刻
+// 的横向偏差 ≤ 上限才计——漏过/绕过（只到过一侧或横向出框）不计。
+// 与速度无关（越侧标志式，非相邻拍差分）；单拍 |Δs|≥1.0 视为里程计跳变，
+// 复位标志防假穿越。只依赖 odom 与框心存储：无路径、任务完成、回溯均照常记账。
+void PathManager::updateCenterCrossing(const Eigen::Vector3d& pos) {
+  for (CenterEntry& ce : centers_) {
+    if (ce.crossed) {
+      continue;
+    }
+    const Eigen::Vector3d rel = pos - ce.point;
+    const double s = rel.dot(ce.normal);
+    const double ds = std::fabs(s - ce.prev_s);
+    if (ds >= 1.0) {  // 里程计跳变/重定位：不可信为连续运动，复位越侧标志
+      ce.saw_neg = ce.saw_pos = false;
+      ce.prev_s = s;
+      continue;
+    }
+    const double lat = std::sqrt(std::max(0.0, rel.squaredNorm() - s * s));
+    if (s <= -center_traverse_clearance_) {
+      if (ce.saw_pos) {  // 正侧→负侧扫平面：反穿
+        if (lat <= center_traverse_lateral_) {
+          ce.crossed = true;
+          publishFrameCount();
+          ROS_INFO("[path_manager] 框心穿越（%.2f, %.2f, %.2f）反向扫平面 lat=%.2f，计数+1",
+                   ce.point.x(), ce.point.y(), ce.point.z(), lat);
+          continue;
+        }
+        ce.saw_pos = false;  // 横向出框的绕过：不算，须重新完整扫平面
+      }
+      ce.saw_neg = true;
+    } else if (s >= center_traverse_clearance_) {
+      if (ce.saw_neg) {  // 负侧→正侧扫平面：顺穿
+        if (lat <= center_traverse_lateral_) {
+          ce.crossed = true;
+          publishFrameCount();
+          ROS_INFO("[path_manager] 框心穿越（%.2f, %.2f, %.2f）顺向扫平面 lat=%.2f，计数+1",
+                   ce.point.x(), ce.point.y(), ce.point.z(), lat);
+          continue;
+        }
+        ce.saw_neg = false;
+      }
+      ce.saw_pos = true;
+    }
+    ce.prev_s = s;
+  }
 }
 
 // 替换语义输入共用：寄存任务路径并复位完成状态（空路径 = 清空任务）。
@@ -538,6 +603,10 @@ double PathManager::tangentYaw(size_t segment_index) const {
 }
 
 void PathManager::timerCallback(const ros::TimerEvent&) {
+  // 穿越计数只依赖里程计与框心存储：无路径/任务完成也照常记账
+  if (has_odom_) {
+    updateCenterCrossing(toVec3(odom_.pose.pose.position));
+  }
   if (!has_odom_ || !has_path_ || complete_) {
     return;
   }
@@ -586,9 +655,9 @@ void PathManager::timerCallback(const ros::TimerEvent&) {
     inside_since_ = ros::Time();
   }
 
-  // ---- 框心记账 + 可选前视约束 ----
-  // 记账循环必须无条件跑：越过/漏过框心的 passed 翻转与 frame_count 穿越
-  // 计数（RECALL 触发依赖）寄生在此，与约束开关解耦。约束部分默认关闭
+  // ---- 框心引导放行 + 可选前视约束 ----
+  // （穿越计数已移至 updateCenterCrossing，在 timerCallback 开头无条件执行）
+  // 此处只管引导：漏过框心 passed 放行防回拽 + 框心锚约束。约束部分默认关闭
   //（2026-09-28 用户确认回归无约束长轨迹跟随——纯 lookahead 沿队引导，
   // 效果好且流畅；要恢复贴轴/对准约束传 _center_lookahead > 0）
   double lookahead_eff = lookahead_;
@@ -603,10 +672,9 @@ void PathManager::timerCallback(const ros::TimerEvent&) {
       }
       const SampledPoint proj = closestPointOnPath(ce.point);
       if (proj.progress < closest.progress - 0.5) {
-        ce.passed = true;  // 已在后方：漏过放行，不回拽
-        ROS_WARN("[path_manager] 框心漏过放行 (%.2f, %.2f, %.2f)",
+        ce.passed = true;  // 已在后方：漏过放行，不回拽（引导放行，不计入穿越数）
+        ROS_WARN("[path_manager] 框心漏过放行（不计穿越） (%.2f, %.2f, %.2f)",
                  ce.point.x(), ce.point.y(), ce.point.z());
-        publishFrameCount();  // 穿越计数 +1（越过已登记框心）
         continue;
       }
       const double d = std::fabs(proj.progress - closest.progress);
