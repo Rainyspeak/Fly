@@ -525,11 +525,13 @@ class WindowDetectorNode {
     wd::Vec3 p2 = f.center;
     if (goal_z_ >= 0.0) p2[2] = goal_z_;
     addPose(p2);
-    // 框心同步登记到热存储（穿心轴约束点；path_manager 侧去重更新）
+    // 框心同步登记到热存储（穿心轴约束点；path_manager 侧去重更新）。
+    // 姿态带框法向（+X=法向，stable_frame 同约定）：path_manager 据此做
+    // 几何穿越判定（frame_count 只数真正穿越过的框心）
     geometry_msgs::PoseStamped cp;
     cp.header = batch.header;
     cp.pose.position = toPoint(p2);
-    cp.pose.orientation.w = 1.0;
+    cp.pose.orientation = quatFromXAxis(f.normal);
     center_pub_.publish(cp);
     wd::Vec3 p3 = f.center + f.normal * goal_exit_dist_;
     if (goal_z_ >= 0.0) p3[2] = goal_z_;

@@ -44,8 +44,9 @@ namespace path_manager {
 //
 // 接线（FSM 吃 Path，故输出也是 Path）：
 //   下游: goal_path_topic 默认 /path_manager/waypoints，直接接 EGO FSM 航点话题。
-//   另发 frame_count_topic（std_msgs/Int32，latch）：centers_ 中已越过（passed）
-//   的框心数 = 穿越计数，供 mission_state 做任务进度（与检测器 done 取最大）。
+//   另发 frame_count_topic（std_msgs/Int32，latch）：centers_ 中被真正穿越（crossed，
+//   几何扫平面判定）的框心数 = 穿越计数，供 mission_state 做任务进度（与检测器
+//   done 取最大）。漏过/绕过的框只做引导放行（passed），不计入。
 
 // ROS 消息 ↔ Eigen 边界转换（内部几何一律 Eigen::Vector3d）
 inline Eigen::Vector3d toVec3(const geometry_msgs::Point& p) {
@@ -92,6 +93,7 @@ class PathManager {
                               const std::vector<size_t>& skip) const;
   void rebuildLengths();
   void publishFrameCount();
+  void updateCenterCrossing(const Eigen::Vector3d& pos);
   void timerCallback(const ros::TimerEvent&);
 
   double totalLength() const;
@@ -146,9 +148,16 @@ class PathManager {
   // 不被大 lookahead 跳过），检测丢失也不丢约束 ----
   struct CenterEntry {
     Eigen::Vector3d point = Eigen::Vector3d::Zero();
-    bool passed = false;
+    Eigen::Vector3d normal = Eigen::Vector3d::UnitZ();  // 框法向（center 消息姿态 +X）
+    bool passed = false;   // 引导放行（进度落到身后防回拽）——不参与计数
+    bool crossed = false;  // 真正穿越（几何扫平面）——frame_count 计数
+    bool saw_neg = false;  // 曾到过法向负侧（≤−clearance）
+    bool saw_pos = false;  // 曾到过法向正侧（≥+clearance）
+    double prev_s = 0.0;   // 上拍 s，仅用于里程计跳变守卫
   };
   std::vector<CenterEntry> centers_;  // FIFO，上限 64
+  double center_traverse_clearance_ = 0.15;  // 穿越|s|门限（对齐检测器 mark_clear）
+  double center_traverse_lateral_ = 1.5;     // 穿越横向偏差上限（框半径量级+余量）
   double center_lookahead_ = 0.0;     // 框心处的前视下限。0=关（默认，纯
                                       // lookahead 长轨迹跟随——2026-09-28 用户
                                       // 回归此行为；>0 开启框心锚+P1 锚约束）

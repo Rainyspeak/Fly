@@ -26,7 +26,7 @@
   <include file="$(find ego_planner)/launch/path_snap.launch">
     <arg name="start_rviz" value="$(arg start_rviz)"/>
     <arg name="max_vel" value="2.0"/>
-    <arg name="max_acc" value="2.0"/>
+    <arg name="max_acc" value="2.5"/>
     <arg name="lookahead_distance" value="$(arg lookahead_distance)"/>
   </include>
 
@@ -42,7 +42,6 @@
     <arg name="geo_fence_x" value="$(arg geo_fence_x)"/>
     <arg name="geo_fence_y" value="$(arg geo_fence_y)"/>
     <arg name="geo_fence_z" value="$(arg geo_fence_z)"/>
-    <arg name="msg_expire_time" value="$(arg msg_expire_time)"/>
   </include>
 
   <!-- ctrl_v1  -->
@@ -58,8 +57,8 @@
     <param name="home_x" value="$(arg home_x)"/>
     <param name="home_y" value="$(arg home_y)"/>
     <param name="home_z" value="$(arg home_z)"/>
-    <param name="target_frames" value="9"/>
-    <param name="total_frames" value="9"/>
+    <param name="target_frames" value="4"/>
+    <param name="total_frames" value="4"/>
   </node>
 
 </launch>
