@@ -1,0 +1,183 @@
+<launch>
+  <!-- path_snap：sim.launch 的 path_manager 接口版（sim.launch 保持原 waypoint
+       接口不动）。差异仅在航点链：waypoint_generator 换成 path_manager——
+       单点 goal(/move_base_simple/goal) 即成新任务（waypoint_generator 功能
+       已并入），寄存多航点 Path(/path_manager/path)，航点入队
+       /path_manager/enqueue（几何特征提取"看到就发"：参考路径在线增长，
+       未达先引不刹停），20 Hz carrot 发到 /waypoint_generator/waypoints
+       直接喂 EGO FSM（FSM 订阅不变）。 -->
+  <arg name="map_size_x" value="40.0"/>
+  <arg name="map_size_y" value="40.0"/>
+  <arg name="map_size_z" value="10.0"/>
+
+  <!--<arg name="odom_topic" value="/Odometry"/>-->
+  <!-- 里程计来源可覆盖：仿真默认 mavros，实机链（trace_stage）传 fastlio /Odometry -->
+  <arg name="odom_topic" default="/mavros/local_position/odom"/>
+
+  <!--<arg name="cloud_topic" value="/cloud_registered"/>-->
+  <arg name="processed_cloud_topic" value="/livox/lidar_world"/>
+  <arg name="cloud_frame" value="world"/>
+
+  <arg name="crop_half_x" value="0.25"/>
+  <arg name="crop_half_y" value="0.25"/>
+  <arg name="crop_half_z" value="0.2"/>
+  <arg name="voxel_leaf_size" value="0.05"/>
+  <arg name="start_rviz" default="true"/>
+
+  <!-- path_manager carrot 前视距离：建议 ≥ fsm/planning_horizon（本链为 3.5） -->
+  <arg name="lookahead_distance" default="5.0"/>
+  <!-- 队尾外推上限：检测不完美（下一框未及时入列）时沿末段继续飞行等待 -->
+  <arg name="tail_extrapolate_max" default="1.5"/>
+
+  <!-- 动力学上限：默认 1.5/2.5，上层 launch（如 race_stage1）可覆盖降速 -->
+  <arg name="max_vel" default="1.6"/>
+  <arg name="max_acc" default="2.5"/>
+  <!-- B样条拉伸（规划加速度裕度）：优化可行性用 a×ratio，1.0=旧行为 -->
+  <arg name="plan_acc_ratio" default="1.0"/>
+
+  <!--<arg name="start_se3_hof" default="true"/>-->
+
+  <!-- EGO upper-level target mode and preset waypoint sequence. -->
+  <arg name="flight_type" default="1"/>
+  
+  <arg name="preset_wait_for_trigger" default="false"/>
+  <arg name="point_num" default="5"/>
+  <arg name="point0_x" default="9.5"/>
+  <arg name="point0_y" default="1.4"/>
+  <arg name="point0_z" default="2.0"/>
+
+  <arg name="point1_x" default="9.5"/>
+  <arg name="point1_y" default="5.0"/>
+  <arg name="point1_z" default="2.0"/>
+
+  <arg name="point2_x" default="0.0"/>
+  <arg name="point2_y" default="5.0"/>
+  <arg name="point2_z" default="2.0"/>
+
+  <arg name="point3_x" default="0.0"/>
+  <arg name="point3_y" default="9.0"/>
+  <arg name="point3_z" default="2.0"/>
+
+  <arg name="point4_x" default="10.5"/>
+  <arg name="point4_y" default="10.0"/>
+  <arg name="point4_z" default="2.0"/>
+  
+  <node pkg="tf" type="static_transform_publisher" name="world_map_linker"
+      args="0 0 0 0 0 0 world map 100"/>
+  <node pkg="tf" type="static_transform_publisher" name="base_link_to_livox_link"
+      args="0.07 0 0.072 0 0.3925 0 base_link livox_link 50"/>
+
+  <!-- 点云转换节点：/livox/lidar -> $(processed_cloud_topic)，自带滤波 -->
+  <node pkg="ego_planner" name="pointcloud_to_world" type="pointcloud_to_world.py" output="screen">
+    <param name="source_topic" value="/livox/lidar"/>
+    <param name="output_topic" value="$(arg processed_cloud_topic)"/>
+    <param name="source_frame" value="livox_link"/>
+    <param name="target_frame" value="$(arg cloud_frame)"/>
+    <!-- 位姿源用 odom 插值而非 TF：mavros TF 滞后于点云戳，飞行中旧 TF 变换新点云
+         每帧错位数厘米且随机 → 框壁多层壳畸变；odom_interp 直接插值/外推到点云时刻 -->
+    <param name="pose_source" value="odom_interp"/>
+    <param name="odom_topic" value="$(arg odom_topic)"/>
+    <!-- 仿真 livox 插件为无回波射线发布 ~45m 远的伪点（占整幅点云一半），
+         裁到 6.5m（对齐检测器 ROI 6m）减负累积器与下游；检测自有 min_range 盲区 -->
+    <param name="max_range" value="6.5"/>
+    <param name="lookup_timeout" value="0.1"/>
+    <param name="use_latest_on_extrapolation" value="false"/>
+    <param name="cloud_timeout" value="1.0"/>
+    <param name="log_interval" value="2.0"/>
+    <!-- 仅体素降采样：仿真链路不做距离裁剪，无需模仿实飞的自打点裁剪 -->
+    <param name="filter_enable" value="true"/>
+    <param name="voxel_leaf_size" value="$(arg voxel_leaf_size)"/>
+    <param name="max_points" value="200000"/>
+  </node>
+
+  <include file="$(find ego_planner)/config/sim.xml">
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="odometry_topic" value="$(arg odom_topic)"/>
+    <!-- Depth camera topics are disabled in LiDAR cloud mode. -->
+    <!-- <arg name="camera_pose_topic" value="/unused_camera_pose"/> -->
+    <!-- <arg name="depth_topic" value="/unused_depth"/> -->\
+    <!--<arg name="cloud_topic" value="$(arg cloud_topic)"/>-->
+
+    <arg name="processed_cloud_topic" value="$(arg processed_cloud_topic)"/>
+    <arg name="cloud_frame" value="$(arg cloud_frame)"/>
+
+    <arg name="crop_half_x" value="$(arg crop_half_x)"/>
+    <arg name="crop_half_y" value="$(arg crop_half_y)"/>
+    <arg name="crop_half_z" value="$(arg crop_half_z)"/>
+    <arg name="voxel_leaf_size" value="$(arg voxel_leaf_size)"/>
+
+
+    <arg name="max_vel" value="$(arg max_vel)"/>
+    <arg name="max_acc" value="$(arg max_acc)"/>
+    <arg name="plan_acc_ratio" value="$(arg plan_acc_ratio)"/>
+    <!-- 航点约束距离 -->
+    <arg name="planning_horizon" value="3.5"/>
+
+    <!-- 1: RViz manual target, 2: EGO upper-level preset waypoint sequence. -->
+    <arg name="flight_type" value="$(arg flight_type)"/>
+    <arg name="preset_wait_for_trigger" value="$(arg preset_wait_for_trigger)"/>
+
+    <arg name="point_num" value="$(arg point_num)"/>
+    <arg name="point0_x" value="$(arg point0_x)"/>
+    <arg name="point0_y" value="$(arg point0_y)"/>
+    <arg name="point0_z" value="$(arg point0_z)"/>
+    <arg name="point1_x" value="$(arg point1_x)"/>
+    <arg name="point1_y" value="$(arg point1_y)"/>
+    <arg name="point1_z" value="$(arg point1_z)"/>
+    <arg name="point2_x" value="$(arg point2_x)"/>
+    <arg name="point2_y" value="$(arg point2_y)"/>
+    <arg name="point2_z" value="$(arg point2_z)"/>
+    <arg name="point3_x" value="$(arg point3_x)"/>
+    <arg name="point3_y" value="$(arg point3_y)"/>
+    <arg name="point3_z" value="$(arg point3_z)"/>
+    <arg name="point4_x" value="$(arg point4_x)"/>
+    <arg name="point4_y" value="$(arg point4_y)"/>
+    <arg name="point4_z" value="$(arg point4_z)"/>
+  </include>
+
+  <node pkg="ego_planner" name="traj_server" type="traj_server" output="screen">
+    <remap from="/odom_world" to="$(arg odom_topic)"/>
+    <remap from="/position_cmd" to="/planner_cmd"/>
+    <param name="traj_server/time_forward" value="1.0" type="double"/>
+  </node>
+
+  <node pkg="path_manager" type="path_ctrl" name="path_ctrl" output="screen">
+    <param name="goal_topic" value="/move_base_simple/goal"/>
+    <param name="path_topic" value="/path_manager/path"/>
+    <param name="goal_path_topic" value="/waypoint_generator/waypoints"/>
+    <param name="odom_topic" value="$(arg odom_topic)"/>
+    <param name="lookahead_distance" value="$(arg lookahead_distance)"/>
+    <!-- 长轨迹 + 温和三航点锚（2026-09-28 用户定调"鲁棒性不够"）：框心锚+P1 锚
+         开启但斜坡跨度收窄到 2.5 m——绝大多数航段仍是全量前视的长轨迹跟随
+         （流畅），仅最后对准段收进 P1→框心→P3 轴（穿框对准鲁棒性）。若仍
+         出现进框前拖速，把 center_gate_window 收到 2.0 或 center_lookahead
+         置 0 关闭 -->
+    <param name="center_lookahead" value="2.0"/>
+    <param name="center_gate_window" value="2.5"/>
+    <!-- 队尾外推：检测丢失/下一框未入列时沿末段方向继续前移（继续飞行等待
+         后续航点入列），走到外推上限才收尾停发；0 = 关闭（到队尾即停） -->
+    <param name="tail_extrapolate_max" value="$(arg tail_extrapolate_max)"/>
+  </node>
+
+  <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization" output="screen">
+    <remap from="~odom" to="$(arg odom_topic)"/>
+    <param name="color/a" value="1.0"/>
+    <param name="color/r" value="0.0"/>
+    <param name="color/g" value="1.0"/>
+    <param name="color/b" value="0.0"/>
+    <param name="covariance_scale" value="100.0"/>
+    <param name="robot_scale" value="1.0"/>
+    <param name="tf45" value="false"/>
+  </node>
+
+  <!--<node pkg="tf" type="static_transform_publisher" name="world_to_camera_init"
+      args="0 0 0 0 0 0 world camera_init 100"/>
+
+  <node pkg="tf" type="static_transform_publisher" name="body_to_base_link"
+      args="0 0 0 0 0 0 body base_link 100"/>-->
+
+  <node if="$(arg start_rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find ego_planner)/rviz/sim.rviz" required="true" />
+</launch>
+
