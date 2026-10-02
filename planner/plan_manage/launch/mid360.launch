@@ -3,7 +3,7 @@
   <arg name="map_size_y" value="20.0"/>
   <arg name="map_size_z" value="5.0"/>
 
-  <arg name="odom_topic" value="/Odometry"/>
+  <arg name="odom_topic" default="/Odometry"/>
   <arg name="cloud_topic" value="/cloud_registered"/>
   <arg name="processed_cloud_topic" value="/cloud_ego_registered"/>
   <arg name="cloud_frame" value="camera_init"/>
@@ -59,11 +59,11 @@
 
 
     <arg name="max_vel" value="0.8"/>
-    <arg name="max_acc" value="1.0"/>
+    <arg name="max_acc" value="0.8"/>
     <arg name="plan_acc_ratio" value="$(arg plan_acc_ratio)"/>
 
 
-    <arg name="planning_horizon" value="3.0"/>
+    <arg name="planning_horizon" value="4"/>
 
     <!-- 1: RViz manual target, 2: EGO upper-level preset waypoint sequence. -->
     
@@ -112,7 +112,7 @@
     <param name="center_gate_window" value="2.0"/>
     <!-- 队尾外推：检测丢失/下一框未入列时沿末段方向继续前移（继续飞行等待
          后续航点入列），走到外推上限才收尾停发；0 = 关闭（到队尾即停） -->
-    <param name="tail_extrapolate_max" value="$(arg tail_extrapolate_max)"/>
+    <param name="tail_extrapolate_max" value="0.0"/>
   </node>
 
   <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization" output="screen">

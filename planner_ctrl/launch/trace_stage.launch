@@ -1,14 +1,14 @@
 <launch>
 
   <arg name="start_rviz" default="true"/>
-  <arg name="goal_z" default="0.9"/>
-  <arg name="goal_exit_dist" default="0.7"/>
+  <arg name="goal_z" default="0.95"/>
+  <arg name="goal_exit_dist" default="0.65"/>
   <arg name="enable_skeleton" default="true"/>
   <!-- path_manager carrot 前视距离（传给 path_snap.launch）：建议 ≥
        fsm/planning_horizon（sim 为 3.5）。window_detector 的单点 goal 在
        path_manager 里逐条替换任务，等效透传；往 /path_manager/path 发整条
        nav_msgs/Path 即可执行多航点任务 -->
-  <arg name="lookahead_distance" default="3.5"/>
+  <arg name="lookahead_distance" default="5"/>
 
   <!-- se3 保护参数：地理围栏半宽/高度上限（超出触发保护降落）、规划器指令
        新鲜度（静默超时判 PLANNER_LOST；0.05 为仿真值，实机 0.01） -->
@@ -26,7 +26,7 @@
   <include file="$(find ego_planner)/launch/mid360.launch">
     <arg name="start_rviz" value="$(arg start_rviz)"/>
     
-    <arg name="plan_acc_ratio" value="0.9"/>
+    <arg name="plan_acc_ratio" value="0.75"/>
     <arg name="lookahead_distance" value="$(arg lookahead_distance)"/>
   </include>
 
@@ -58,8 +58,8 @@
   <node pkg="planner_ctrl" type="mission_state.py" name="mission_state" output="screen">
     <param name="goal_topic" value="/move_base_simple/goal"/>
     <param name="odom_topic" value="$(arg odom_topic)"/>
-    <param name="target_frames" value="3"/>
-    <param name="total_frames" value="3"/>
+    <param name="target_frames" value="2"/>
+    <param name="total_frames" value="2"/>
     <!-- 最后一个航点：手动指定（home_x/home_y 顶层 arg，默认 0,0），高度=起飞高度-->
     <param name="home_x" value="$(arg home_x)"/>
     <param name="home_y" value="$(arg home_y)"/>

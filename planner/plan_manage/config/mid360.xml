@@ -76,7 +76,7 @@
     <param name="fsm/planning_horizen_time" value="3" type="double"/>
 
     <!-- 剩余轨迹时间 < 该值(s) 且碰撞时触发 EMERGENCY 立即刹停 -->
-    <param name="fsm/emergency_time_" value="0.7" type="double"/>
+    <param name="fsm/emergency_time_" value="1.1" type="double"/>
 
     <param name="fsm/waypoint_num" value="$(arg point_num)" type="int"/>
     <param name="fsm/waypoint0_x" value="$(arg point0_x)" type="double"/>
